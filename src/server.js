@@ -319,7 +319,7 @@ app.get('/messages/:chatId', async (req, res) => {
 
   try {
     const messagesQuery = await db.query(
-      'SELECT id, message_text, sender_id, timestamp FROM message WHERE message_room_id = $1 ORDER BY timestamp ASC',
+      'SELECT id, message_text, sender_id, timestamp FROM messages WHERE message_room_id = $1 ORDER BY timestamp ASC',
       [chatId]
     );
     res.json(messagesQuery.rows);
@@ -335,7 +335,7 @@ app.post('/messages', async (req, res) => {
 
   try {
     const result = await db.query(
-      'INSERT INTO message (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
       [message_room_id, sender_id, message_text]
     );
     res.json(result.rows[0]);
@@ -380,7 +380,7 @@ io.on('connection', (socket) => {
   socket.on('sendMessage', async ({ roomId, message }) => {
     try {
       const result = await db.query(
-        'INSERT INTO message (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+        'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
         [roomId, message.sender_id, message.message_text]
       );
       const savedMessage = result.rows[0];
