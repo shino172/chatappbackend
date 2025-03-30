@@ -261,7 +261,7 @@ app.get('/chat-rooms/:userId', async (req, res) => {
       `
       SELECT mr.id, mr.user_id, mr.driver_id,
              (SELECT m.message_text 
-              FROM message m 
+              FROM messages m 
               WHERE m.message_room_id = mr.id 
               ORDER BY m.timestamp DESC 
               LIMIT 1) as last_message
