@@ -288,7 +288,12 @@ app.get('/chat-rooms/:userId', async (req, res) => {
               FROM messages m 
               WHERE m.message_room_id = mr.id 
               ORDER BY m.timestamp DESC 
-              LIMIT 1) as last_message
+              LIMIT 1) as last_message,
+             (SELECT COUNT(*) 
+              FROM messages m 
+              WHERE m.message_room_id = mr.id 
+              AND m.sender_id != $1 
+              AND m.is_read = FALSE) as unread_count
       FROM message_room mr
       WHERE mr.user_id = $1 OR mr.driver_id = $1
       `,
@@ -326,6 +331,7 @@ app.get('/chat-rooms/:userId', async (req, res) => {
           driver_id: room.driver_id,
           otherUser,
           lastMessage: room.last_message || 'No messages yet',
+          unreadCount: parseInt(room.unread_count) || 0,
         };
       })
     );
@@ -359,12 +365,39 @@ app.post('/messages', async (req, res) => {
 
   try {
     const result = await db.query(
-      'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp, is_read) VALUES ($1, $2, $3, NOW(), FALSE) RETURNING *',
       [message_room_id, sender_id, message_text]
     );
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error saving message:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// API đánh dấu tin nhắn là đã đọc
+app.post('/mark-read/:roomId/:userId', async (req, res) => {
+  const { roomId, userId } = req.params;
+
+  try {
+    await db.query(
+      'UPDATE messages SET is_read = TRUE WHERE message_room_id = $1 AND sender_id != $2 AND is_read = FALSE',
+      [roomId, userId]
+    );
+
+    // Tính lại số tin nhắn chưa đọc
+    const unreadCountQuery = await db.query(
+      'SELECT COUNT(*) FROM messages WHERE message_room_id = $1 AND sender_id != $2 AND is_read = FALSE',
+      [roomId, userId]
+    );
+    const unreadCount = parseInt(unreadCountQuery.rows[0].count) || 0;
+
+    // Gửi sự kiện qua Socket.IO để cập nhật unreadCount
+    io.to(roomId).emit('updateUnreadCount', { roomId, unreadCount });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error marking messages as read:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -404,13 +437,13 @@ io.on('connection', (socket) => {
   socket.on('sendMessage', async ({ roomId, message }) => {
     try {
       const result = await db.query(
-        'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+        'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp, is_read) VALUES ($1, $2, $3, NOW(), FALSE) RETURNING *',
         [roomId, message.sender_id, message.message_text]
       );
       const savedMessage = result.rows[0];
       io.to(roomId).emit('message', savedMessage);
 
-      // Gửi thông báo đẩy
+      // Tính lại số tin nhắn chưa đọc
       const roomQuery = await db.query(
         'SELECT user_id, driver_id FROM message_room WHERE id = $1',
         [roomId]
@@ -419,6 +452,15 @@ io.on('connection', (socket) => {
         const room = roomQuery.rows[0];
         const receiverId = room.user_id === message.sender_id ? room.driver_id : room.user_id;
 
+        const unreadCountQuery = await db.query(
+          'SELECT COUNT(*) FROM messages WHERE message_room_id = $1 AND sender_id != $2 AND is_read = FALSE',
+          [roomId, receiverId]
+        );
+        const unreadCount = parseInt(unreadCountQuery.rows[0].count) || 0;
+
+        io.to(roomId).emit('updateUnreadCount', { roomId, unreadCount });
+
+        // Gửi thông báo đẩy
         let receiverQuery = await db.query(
           'SELECT push_token FROM "user" WHERE id = $1',
           [receiverId]
