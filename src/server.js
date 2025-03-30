@@ -1,4 +1,4 @@
-// // src/server.js
+// src/server.js
 // const express = require('express');
 // const http = require('http');
 // const { Server } = require('socket.io');
@@ -273,7 +273,7 @@ app.get('/chat-rooms/:userId', async (req, res) => {
 
     const chatRooms = await Promise.all(
       roomsQuery.rows.map(async (room) => {
-        const otherUserId = room.user_id ===植物 userId ? room.driver_id : room.user_id;
+        const otherUserId = room.user_id === userId ? room.driver_id : room.user_id;
         let otherUser = { id: otherUserId, name: 'Unknown User', profileImageUrl: '' };
 
         if (isDriver) {
