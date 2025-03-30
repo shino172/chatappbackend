@@ -193,21 +193,45 @@ const express = require('express');
 const { Pool } = require('pg');
 const http = require('http');
 const { Server } = require('socket.io');
+const axios = require('axios');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*', // Cho phép tất cả origin, bạn có thể giới hạn sau
+    origin: '*',
   },
 });
 
-// Kết nối đến Neon
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
 app.use(express.json());
+
+// Hàm gửi thông báo đẩy
+async function sendPushNotification(pushToken, title, body) {
+  const message = {
+    to: pushToken,
+    sound: 'default',
+    title,
+    body,
+    data: { someData: 'goes here' },
+  };
+
+  try {
+    await axios.post('https://exp.host/--/api/v2/push/send', message, {
+      headers: {
+        Accept: 'application/json',
+        'Accept-encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+    });
+    console.log('Push notification sent successfully');
+  } catch (error) {
+    console.error('Error sending push notification:', error);
+  }
+}
 
 // API lấy thông tin người dùng
 app.get('/users/:userId', async (req, res) => {
@@ -261,7 +285,7 @@ app.get('/chat-rooms/:userId', async (req, res) => {
       `
       SELECT mr.id, mr.user_id, mr.driver_id,
              (SELECT m.message_text 
-              FROM messages m 
+              FROM message m 
               WHERE m.message_room_id = mr.id 
               ORDER BY m.timestamp DESC 
               LIMIT 1) as last_message
@@ -319,7 +343,7 @@ app.get('/messages/:chatId', async (req, res) => {
 
   try {
     const messagesQuery = await db.query(
-      'SELECT id, message_text, sender_id, timestamp FROM messages WHERE message_room_id = $1 ORDER BY timestamp ASC',
+      'SELECT id, message_text, sender_id, timestamp FROM message WHERE message_room_id = $1 ORDER BY timestamp ASC',
       [chatId]
     );
     res.json(messagesQuery.rows);
@@ -335,7 +359,7 @@ app.post('/messages', async (req, res) => {
 
   try {
     const result = await db.query(
-      'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      'INSERT INTO message (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
       [message_room_id, sender_id, message_text]
     );
     res.json(result.rows[0]);
@@ -380,11 +404,41 @@ io.on('connection', (socket) => {
   socket.on('sendMessage', async ({ roomId, message }) => {
     try {
       const result = await db.query(
-        'INSERT INTO messages (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
+        'INSERT INTO message (message_room_id, sender_id, message_text, timestamp) VALUES ($1, $2, $3, NOW()) RETURNING *',
         [roomId, message.sender_id, message.message_text]
       );
       const savedMessage = result.rows[0];
       io.to(roomId).emit('message', savedMessage);
+
+      // Gửi thông báo đẩy
+      const roomQuery = await db.query(
+        'SELECT user_id, driver_id FROM message_room WHERE id = $1',
+        [roomId]
+      );
+      if (roomQuery.rows.length > 0) {
+        const room = roomQuery.rows[0];
+        const receiverId = room.user_id === message.sender_id ? room.driver_id : room.user_id;
+
+        let receiverQuery = await db.query(
+          'SELECT push_token FROM "user" WHERE id = $1',
+          [receiverId]
+        );
+        if (receiverQuery.rows.length === 0) {
+          receiverQuery = await db.query(
+            'SELECT push_token FROM driver WHERE id = $1',
+            [receiverId]
+          );
+        }
+
+        if (receiverQuery.rows.length > 0 && receiverQuery.rows[0].push_token) {
+          const pushToken = receiverQuery.rows[0].push_token;
+          await sendPushNotification(
+            pushToken,
+            'New Message',
+            `You have a new message: ${message.message_text}`
+          );
+        }
+      }
     } catch (error) {
       console.error('Error saving message:', error);
     }
@@ -403,7 +457,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Render sử dụng biến môi trường PORT
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
