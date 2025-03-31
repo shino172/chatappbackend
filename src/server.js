@@ -208,6 +208,11 @@ const db = new Pool({
 });
 
 app.use(express.json());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-type', 'Authorization']
+}))
 
 // Hàm gửi thông báo đẩy
 async function sendPushNotification(pushToken, title, body) {
